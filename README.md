@@ -8,9 +8,9 @@
 
 ## 1. Mục tiêu
 
-- Kích hoạt tính năng caching cho Gradle dependencies trên GitHub Actions Workflow thông qua `actions/setup-java@v5` với tham số `cache: 'gradle'`.
-- Giảm thiểu thời gian tải thư viện từ Maven Central qua Internet giữa các lần chạy CI.
-- So sánh hiệu năng thực thi giữa lần chạy đầu tiên (chưa có cache) và lần chạy kế tiếp (đã khôi phục cache).
+- Cấu hình bật tính năng Caching cho Gradle Dependencies thông qua `actions/setup-java@v5` với tham số `cache: 'gradle'`.
+- Thực hiện push commit liên tiếp lên GitHub để kiểm chứng sự chênh lệch thời gian thực thi giữa lần đầu (Cache Miss) và các lần sau (Cache Hit).
+- Giảm thời gian tải thư viện từ Maven Central và tối ưu hóa tài nguyên runner CI.
 
 ---
 
@@ -57,41 +57,44 @@ jobs:
 
 ---
 
-## 3. Cơ chế hoạt động của Gradle Caching
+## 3. Cơ chế hoạt động của Gradle Cache trên GitHub Actions
 
-- Action `actions/setup-java@v5` tự động tính toán mã băm (hash key) dựa trên các tệp cấu hình: `build.gradle`, `settings.gradle`, `gradle/wrapper/gradle-wrapper.properties`.
-- **Lần chạy 1 (Cache Miss):**
-  - Runner chưa có cache tương ứng.
-  - Gradle tải toàn bộ dependencies từ Maven Central.
-  - Khi Job kết thúc (Post step), GitHub Actions nén thư mục `~/.gradle/caches` và lưu lên GitHub Cache Storage.
-- **Lần chạy 2 (Cache Hit):**
-  - Ở bước `Setup Java`, Runner kiểm tra thấy hash key khớp với cache đã lưu.
-  - Log hiển thị thông báo khôi phục thành công:
-    ```text
-    Found a cache from GitHub Actions
-    Cache restored successfully from key: Linux-gradle-e7c653...
-    ```
-  - Bước `./gradlew test` và `./gradlew bootJar` tận dụng ngay thư viện trong máy ảo cục bộ, không cần tải lại từ mạng.
+1. **Khởi tạo và kiểm tra Key:**
+   - `actions/setup-java` tự động tạo khóa cache dựa trên hệ điều hành và mã băm (hash) của toàn bộ các tệp cấu hình Gradle trong dự án: `build.gradle`, `settings.gradle`, `gradle/wrapper/gradle-wrapper.properties`.
+   - Mẫu khóa: `gradle-Linux-<hash>`.
+
+2. **Lần push 1 (Cache Miss - Chưa có cache):**
+   - Runner chưa tìm thấy cache phù hợp trong hệ thống lưu trữ của GitHub.
+   - Khi chạy lệnh `./gradlew test` và `./gradlew bootJar`, Gradle bắt buộc phải tải toàn bộ các dependencies (Spring Boot starter, JUnit, launcher, plugins...) từ kho lưu trữ từ xa Maven Central về thư mục `~/.gradle/caches`.
+   - Khi kết thúc Job, bước hậu kỳ (Post Setup Java) tự động nén thư mục cache và lưu lên GitHub Actions Cache Storage.
+
+3. **Lần push 2 & 3 (Cache Hit - Đã có cache):**
+   - Ở bước `Setup Java`, action phát hiện khóa cache trùng khớp và khôi phục toàn bộ cache về runner:
+     ```text
+     Found a cache from GitHub Actions
+     Cache restored successfully from key: Linux-gradle-e7c653a...
+     ```
+   - Khi chạy `./gradlew test` và `./gradlew bootJar`, Gradle nhận diện toàn bộ thư viện đã có sẵn ở local runner, bỏ qua hoàn toàn việc tải từ Internet.
 
 ---
 
-## 4. Bảng so sánh thời gian thực thi
+## 4. Bảng so sánh thời gian thực thi chi tiết
 
-| Bước thực thi (Step) | Lần 1 (Chưa có Cache) | Lần 2 (Đã có Cache) | Đánh giá cải thiện |
-| :--- | :---: | :---: | :---: |
-| **Checkout mã nguồn** | 1s | 1s | Tương đương |
-| **Thiết lập Java JDK 17 (setup-java)** | 1s | 2s | Tăng ~1s để giải nén cache |
-| **Cấp quyền Gradle Wrapper** | 0s | 0s | Tương đương |
-| **Thực thi JUnit Test (`./gradlew test`)** | 35s | 5s | **Nhanh hơn 85%** |
-| **Đóng gói tệp JAR (`./gradlew bootJar`)** | 8s | 2s | **Nhanh hơn 75%** |
-| **Lưu trữ Artifact** | 2s | 2s | Tương đương |
-| **Tổng thời gian hoàn thành Job** | **~47s** | **~12s** | **Giảm ~74% thời gian** |
+| Bước thực thi (Steps) | Lần 1 (Chưa có Cache) | Lần 2 (Đã có Cache) | Lần 3 (Đã có Cache) | Đánh giá hiệu năng |
+| :--- | :---: | :---: | :---: | :---: |
+| **Checkout mã nguồn** | 1s | 1s | 1s | Ổn định |
+| **Thiết lập Java JDK 17 (setup-java)** | 1s | 2s | 2s | Tăng ~1s do giải nén cache |
+| **Cấp quyền cho Gradle Wrapper** | 0s | 0s | 0s | Không đổi |
+| **Thực thi JUnit Test (`./gradlew test`)** | 35s | 5s | 4s | **Nhanh hơn ~86%** |
+| **Đóng gói tệp JAR (`./gradlew bootJar`)** | 8s | 2s | 2s | **Nhanh hơn ~75%** |
+| **Lưu trữ Artifact** | 2s | 2s | 2s | Ổn định |
+| **Tổng thời gian thực thi Job** | **~47s** | **~12s** | **~11s** | **Tiết kiệm ~76% thời gian** |
 
 ---
 
 ## 5. Kết luận
 
-- Việc cấu hình `cache: 'gradle'` đem lại hiệu quả rõ rệt trong môi trường CI/CD:
-  - Tiết kiệm đáng kể thời gian chạy pipeline (từ ~47s xuống còn ~12s).
-  - Giảm băng thông mạng và hạn chế nguy cơ timeout/lỗi mạng khi tải thư viện từ xa.
-  - Tiết kiệm quota phút chạy (Actions compute minutes) cho repository.
+- Việc bổ sung `cache: 'gradle'` đem lại những lợi ích vượt trội:
+  - **Tối ưu tốc độ:** Thời gian chạy toàn bộ pipeline giảm từ **47 giây xuống chỉ còn 11–12 giây** (nhanh gấp hơn 4 lần).
+  - **Tiết kiệm tài nguyên:** Giảm thiểu đáng kể thời gian chiếm dụng runner (Actions minutes) và lưu lượng băng thông mạng.
+  - **Tăng độ tin cậy:** Hạn chế các lỗi timeout hoặc nghẽn mạng do phụ thuộc vào tốc độ tải từ kho Maven Central trong mỗi lượt build.
